@@ -20,11 +20,15 @@ Job.start(db, job_id)：置 RUNNING
 Job.finish(db, job_id, status, error="")：置 SUCCEEDED/FAILED"""
 
 # app/core/models.py
-from sqlalchemy.orm import declarative_base, Session
-from sqlalchemy import Column, String, JSON, UniqueConstraint, Text, DateTime
+from sqlalchemy.orm import declarative_base, Session, relationship
+from sqlalchemy import Column, String, JSON, UniqueConstraint, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 import uuid
+from datetime import datetime
 from app.core.state_machine import JobStatus, can_transit
+
+
+def _uuid() -> str: return str(uuid.uuid4())
 
 Base = declarative_base()
 
@@ -69,3 +73,27 @@ class Job(Base):
             job.error = error or ""
             db.add(job); db.commit()
         return job
+
+
+class Account(Base):
+    __tablename__ = "accounts"
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, index=True, nullable=False)
+    site = Column(String, index=True, nullable=False)              # 例如 "example"
+    account_name = Column(String, nullable=False)                  # 站点内用户名/别名
+    secret_encrypted = Column(Text, nullable=False)                # 加密后的凭据 JSON
+    meta_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("user_id","site","account_name", name="uq_user_site_acc"),)
+    sessions = relationship("Session", back_populates="account")
+
+class Session(Base):
+    __tablename__ = "sessions"
+    id = Column(String, primary_key=True, default=_uuid)
+    account_id = Column(String, ForeignKey("accounts.id"), index=True, nullable=False)
+    data_encrypted = Column(Text, nullable=False)                  # 加密后的会话 JSON（cookies/token）
+    status = Column(String, default="ACTIVE")                      # ACTIVE/EXPIRED/BLOCKED
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    account = relationship("Account", back_populates="sessions")

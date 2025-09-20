@@ -14,20 +14,50 @@ link_job_id(db, user_id, key, job_id)：将这次幂等请求与 job_id 关联""
 # app/services/idempotency.py
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.infra.logger import emit
 from app.core.models import CommandRequest
+import json, uuid
 
-def ensure_request(db: Session, user_id: str, key: str, cmd_type: str, payload: dict):
-    row = CommandRequest(user_id=user_id, key=key, cmd_type=cmd_type, payload=payload)
-    db.add(row)
+def ensure_request(db, user_id: str, key: str, cmd_type: str, payload: dict):
+    """
+    职能：
+    - 幂等记录：首次插入；若唯一键冲突则查回已有记录并返回。
+    返回：
+    - CommandRequest ORM 对象（保证非 None）；出错直接抛异常。
+    日志：
+    - idem_create_ok / idem_integrity_hit / idem_integrity_miss / idem_create_error
+    """
+    req = CommandRequest(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        key=key,
+        cmd_type=cmd_type,
+        payload=json.dumps(payload or {}),
+        job_id=None,
+    )
     try:
-        db.commit()     # 首次提交成功
-        return None
+        db.add(req)
+        db.commit()
+        db.refresh(req)
+        emit("idem_create_ok", user_id=user_id, key=key, request_id=req.id)
+        return req
     except IntegrityError:
         db.rollback()
-        existed = db.query(CommandRequest).filter_by(user_id=user_id, key=key).first()
-        if existed and existed.job_id:
-            return {"job_id": existed.job_id, "status": "PENDING"}
-        return {"job_id": None, "status": "PENDING"}
+        existed = (
+            db.query(CommandRequest)
+              .filter(CommandRequest.user_id == user_id, CommandRequest.key == key)
+              .first()
+        )
+        if existed:
+            emit("idem_integrity_hit", user_id=user_id, key=key, request_id=existed.id, job_id=existed.job_id)
+            return existed
+        else:
+            emit("idem_integrity_miss", user_id=user_id, key=key)
+            raise
+    except Exception as e:
+        db.rollback()
+        emit("idem_create_error", user_id=user_id, key=key, error=str(e))
+        raise
 
 def link_job_id(db: Session, user_id: str, key: str, job_id: str):
     row = db.query(CommandRequest).filter_by(user_id=user_id, key=key).first()

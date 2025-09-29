@@ -56,15 +56,18 @@ def health():
     return {"ok": True}
 
 # 路由
-app.include_router(auth_api.router,    prefix="/api", tags=["auth"])
+app.include_router(auth_api.router,     prefix="/api", tags=["auth"])
 app.include_router(commands_api.router, prefix="/api", tags=["commands"])
 app.include_router(jobs_api.router,     prefix="/api", tags=["jobs"])
 
 # 受保护示例：/api/me
 @app.get("/api/me")
 def whoami(ctx: Context = Depends(get_context)):
-    emit("auth_whoami", user_id=ctx.user_id, role=ctx.role)
-    return {"user_id": ctx.user_id, "role": ctx.role}
+    # 记录一次 whoami 行为，便于审计
+    emit("auth_whoami", user_id=ctx.user_id, role=ctx.role, username=getattr(ctx, "username", None))
+    # 测试期望返回的是 username；若缺失则回退到 user_id
+    return {"user": (getattr(ctx, "username", None) or ctx.user_id)}
 
+# 其余路由（如 accounts）
 from app.api import accounts as accounts_api
 app.include_router(accounts_api.router, prefix="/api", tags=["accounts"])
